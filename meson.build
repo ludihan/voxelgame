@@ -14,7 +14,10 @@ c_args = []
 cpp_args = []
 link_args = []
 name_suffix = []
-dependencies = []
+dependencies = [
+  dependency('enet'),
+  dependency('stc'),
+]
 
 # Raylib configuration
 cmake = import('cmake')
