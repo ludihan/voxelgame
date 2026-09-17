@@ -19,6 +19,12 @@ dependencies = [
   dependency('stc'),
 ]
 
+inc_dir = include_directories('src')
+
+sources = [
+  'src/main.c',
+]
+
 # Raylib configuration
 cmake = import('cmake')
 raylib_opts = cmake.subproject_options()
@@ -62,13 +68,7 @@ elif host_machine.system() == 'emscripten'
   name_suffix = 'html'
 endif
 
-inc_dir = include_directories('src')
-
-sources = [
-  'src/main.c',
-]
-
-raylib_dep = dependency('raylib', method: 'cmake')
+dependencies += dependency('raygui')
 
 exe = executable(
   'voxelgame',
