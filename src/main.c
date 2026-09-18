@@ -1,33 +1,12 @@
-/*******************************************************************************************
- *
- *   raylib [core] example - 3d camera fps
- *
- *   Example complexity rating: [★★★☆] 3/4
- *
- *   Example originally created with raylib 5.5, last time updated with
- * raylib 5.5
- *
- *   Example contributed by Agnis Aldiņš (@nezvers) and reviewed by Ramon
- * Santamaria (@raysan5)
- *
- *   Example licensed under an unmodified zlib/libpng license, which is an
- * OSI-certified, BSD-like license that allows static linking with closed source
- * software
- *
- *   Copyright (c) 2025 Agnis Aldiņš (@nezvers)
- *
- ********************************************************************************************/
-
 #include "box3d/box3d.h"
+#include "box3d/id.h"
+#include "box3d/math_functions.h"
 #include "box3d/types.h"
 #include "raylib.h"
 
 #include "raymath.h"
 #include <stdio.h>
 
-//----------------------------------------------------------------------------------
-// Defines and Macros
-//----------------------------------------------------------------------------------
 // Movement constants
 #define GRAVITY 32.0f
 #define MAX_SPEED 20.0f
@@ -46,10 +25,6 @@
 
 #define NORMALIZE_INPUT 0
 
-//----------------------------------------------------------------------------------
-// Types and Structures Definition
-//----------------------------------------------------------------------------------
-// Body structure
 typedef struct {
     Vector3 position;
     Vector3 velocity;
@@ -57,9 +32,10 @@ typedef struct {
     bool isGrounded;
 } Body;
 
-//----------------------------------------------------------------------------------
-// Global Variables Definition
-//----------------------------------------------------------------------------------
+typedef struct {
+    b3BodyId *bodies;
+} World;
+
 static Vector2 sensitivity = {0.001f, 0.001f};
 
 static Body player = {0};
@@ -69,9 +45,6 @@ static float walkLerp = 0.0f;
 static float headLerp = STAND_HEIGHT;
 static Vector2 lean = {0};
 
-//----------------------------------------------------------------------------------
-// Module Functions Declaration
-//----------------------------------------------------------------------------------
 static void DrawLevel(void);
 static void UpdateCameraFPS(Camera *camera);
 static void UpdateBody(
@@ -83,26 +56,28 @@ static void UpdateBody(
     bool crouchHold
 );
 
-//------------------------------------------------------------------------------------
-// Program main entry point
-//------------------------------------------------------------------------------------
 int main(void) {
-    // Initialization
-    //--------------------------------------------------------------------------------------
-    const int screenWidth = 800;
-    const int screenHeight = 450;
+    const int screenWidth = 1024;
+    const int screenHeight = 768;
 
     InitWindow(
         screenWidth, screenHeight, "raylib [core] example - 3d camera fps"
     );
+
     b3WorldDef worldDef = b3DefaultWorldDef();
     worldDef.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
     b3WorldId worldId = b3CreateWorld(&worldDef);
+
     b3BodyDef bodyDef = b3DefaultBodyDef();
+    b3BodyDef planeDef = b3DefaultBodyDef();
     bodyDef.type = b3_dynamicBody;
-    bodyDef.position = (b3Vec3){10.0f, 2.0f, 10.0f};
+    planeDef.type = b3_staticBody;
+    bodyDef.position = (b3Vec3){10.0f, 200.0f, 10.0f};
+    planeDef.position = (b3Vec3){-250, 0.0f, 250.0f};
     b3BodyId bodyId = b3CreateBody(worldId, &bodyDef);
+    b3BodyId planeId = b3CreateBody(worldId, &planeDef);
     b3BoxHull dynamicBox = b3MakeCubeHull(1.0f);
+    // b3BoxHull staticPlane = b3MakeBoxHull(1.0f);
 
     b3ShapeDef shapeDef = b3DefaultShapeDef();
     shapeDef.density = 1.0f;
@@ -110,8 +85,6 @@ int main(void) {
 
     b3CreateHullShape(bodyId, &shapeDef, &dynamicBox.base);
 
-    // Initialize camera variables
-    // NOTE: UpdateCameraFPS() takes care of the rest
     Camera camera = {0};
     camera.fovy = 60.0f;
     camera.projection = CAMERA_PERSPECTIVE;
@@ -121,24 +94,20 @@ int main(void) {
         player.position.z,
     };
 
-    UpdateCameraFPS(&camera); // Update camera parameters
+    UpdateCameraFPS(&camera);
 
-    DisableCursor(); // Limit cursor to relative movement inside the window
+    DisableCursor();
 
-    SetTargetFPS(60); // Set our game to run at 60 frames-per-second
-    //--------------------------------------------------------------------------------------
+    SetTargetFPS(60);
 
-    // Main game loop
-    while (!WindowShouldClose()) // Detect window close button or ESC key
-    {
-        if (IsKeyDown(KEY_F))
-            ToggleFullscreen();
-        float timeStep = (1.0f / 60.0f) * GetFrameTime();
-        int subStepCount = 4 * GetFrameTime();
+    while (!WindowShouldClose()) {
+        float timeStep = GetFrameTime();
+        int subStepCount = 4;
         b3World_Step(worldId, timeStep, subStepCount);
 
         b3Vec3 position = b3Body_GetPosition(bodyId);
         b3Quat rotation = b3Body_GetRotation(bodyId);
+        b3Vec3 rotated = b3RotateVector(rotation, position);
 
         printf(
             "%4.2f %4.2f %4.2f %4.2f %4.2f %4.2f\n",
@@ -201,9 +170,9 @@ int main(void) {
         BeginMode3D(camera);
         DrawCube(
             (Vector3){
-                position.x,
-                position.y,
-                position.z,
+                rotated.x,
+                rotated.y,
+                rotated.z,
             },
             2,
             2,
@@ -238,10 +207,7 @@ int main(void) {
         //----------------------------------------------------------------------------------
     }
 
-    // De-Initialization
-    //--------------------------------------------------------------------------------------
-    CloseWindow(); // Close window and OpenGL context
-    //--------------------------------------------------------------------------------------
+    CloseWindow();
 
     b3DestroyWorld(worldId);
     return 0;
@@ -378,13 +344,11 @@ static void UpdateCameraFPS(Camera *camera) {
     camera->target = Vector3Add(camera->position, pitch);
 }
 
-// Draw game level
 static void DrawLevel(void) {
     const int floorExtent = 25;
     const float tileSize = 5.0f;
     const Color tileColor1 = (Color){150, 200, 200, 255};
 
-    // Floor tiles
     for (int y = -floorExtent; y < floorExtent; y++) {
         for (int x = -floorExtent; x < floorExtent; x++) {
             if ((y & 1) && (x & 1)) {
@@ -402,25 +366,6 @@ static void DrawLevel(void) {
             }
         }
     }
-
-    const Vector3 towerSize = (Vector3){16.0f, 32.0f, 16.0f};
-    const Color towerColor = (Color){150, 200, 200, 255};
-
-    // Vector3 towerPos = (Vector3){16.0f, 16.0f, 16.0f};
-    // DrawCubeV(towerPos, towerSize, towerColor);
-    // DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
-
-    // towerPos.x *= -1;
-    // DrawCubeV(towerPos, towerSize, towerColor);
-    // DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
-
-    // towerPos.z *= -1;
-    // DrawCubeV(towerPos, towerSize, towerColor);
-    // DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
-
-    // towerPos.x *= -1;
-    // DrawCubeV(towerPos, towerSize, towerColor);
-    // DrawCubeWiresV(towerPos, towerSize, DARKBLUE);
 
     // Red sun
     DrawSphere(
