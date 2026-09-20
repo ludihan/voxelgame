@@ -45,6 +45,18 @@ endif
 raylib_subproject = cmake.subproject('raylib', options: raylib_opts)
 dependencies += raylib_subproject.dependency('raylib')
 
+# Box3D configuration
+box3d_opts = cmake.subproject_options()
+box3d_opts.set_install(false)
+box3d_opts.add_cmake_defines({
+  'BOX3D_SAMPLES': 'OFF',
+  'BOX3D_BENCHMARKS': 'OFF',
+  'BOX3D_DOCS': 'OFF',
+  'BOX3D_UNIT_TESTS': 'OFF',
+})
+box3d_subproject = cmake.subproject('box3d', options: box3d_opts)
+dependencies += box3d_subproject.dependency('box3d')
+
 # General configuration
 if host_machine.system() == 'windows'
   dependencies += [
