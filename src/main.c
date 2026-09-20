@@ -1,119 +1,324 @@
+#include "box3d/box3d.h"
+#include "box3d/id.h"
+#include "box3d/math_functions.h"
+#include "box3d/types.h"
 #include "raylib.h"
 
-#define RAYGUI_IMPLEMENTATION
-#include "raygui.h"
 #include "raymath.h"
+#include "rlgl.h"
 
-#define MAX(a, b) ((a) > (b) ? (a) : (b))
-#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#define i_key b3BodyId
+#include "stc/vec.h"
+
+// Movement constants
+#define GRAVITY 32.0f
+#define MAX_SPEED 20.0f
+#define CROUCH_SPEED 5.0f
+#define JUMP_FORCE 12.0f
+#define MAX_ACCEL 150.0f
+// Grounded drag
+#define FRICTION 0.86f
+// Increasing air drag, increases strafing speed
+#define AIR_DRAG 0.98f
+// Responsiveness for turning movement direction to looked direction
+#define CONTROL 15.0f
+#define CROUCH_HEIGHT 0.0f
+#define STAND_HEIGHT 1.0f
+#define BOTTOM_HEIGHT 0.5f
+
+#define NORMALIZE_INPUT 0
+
+typedef struct {
+    Vector3 position;
+    Vector3 velocity;
+    Vector3 dir;
+    bool isGrounded;
+} Body;
+
+typedef struct {
+    b3BodyId *bodies;
+} World;
+
+static Vector2 sensitivity = {0.001f, 0.001f};
+static Body player = {0};
+static Vector2 lookRotation = {0};
+static float headTimer = 0.0f;
+static float walkLerp = 0.0f;
+static float headLerp = STAND_HEIGHT;
+static Vector2 lean = {0};
+
+// Update body considering current world state
+void update_body(
+    Body *body,
+    float rot,
+    char side,
+    char forward,
+    bool jumpPressed,
+    bool crouchHold
+) {
+    Vector2 input = (Vector2){(float)side, (float)-forward};
+
+#if defined(NORMALIZE_INPUT)
+    // Slow down diagonal movement
+    if ((side != 0) && (forward != 0))
+        input = Vector2Normalize(input);
+#endif
+
+    float delta = GetFrameTime();
+
+    if (!body->isGrounded)
+        body->velocity.y -= GRAVITY * delta;
+
+    if (body->isGrounded && jumpPressed) {
+        body->velocity.y = JUMP_FORCE;
+        body->isGrounded = false;
+
+        // Sound can be played at this moment
+        // SetSoundPitch(fxJump, 1.0f + (GetRandomValue(-100, 100)*0.001));
+        // PlaySound(fxJump);
+    }
+
+    Vector3 front = (Vector3){sinf(rot), 0.f, cosf(rot)};
+    Vector3 right = (Vector3){cosf(-rot), 0.f, sinf(-rot)};
+
+    Vector3 desiredDir = (Vector3){
+        input.x * right.x + input.y * front.x,
+        0.0f,
+        input.x * right.z + input.y * front.z,
+    };
+    body->dir = Vector3Lerp(body->dir, desiredDir, CONTROL * delta);
+
+    float decel = (body->isGrounded ? FRICTION : AIR_DRAG);
+    Vector3 hvel =
+        (Vector3){body->velocity.x * decel, 0.0f, body->velocity.z * decel};
+
+    float hvelLength = Vector3Length(hvel); // Magnitude
+    if (hvelLength < (MAX_SPEED * 0.01f))
+        hvel = (Vector3){0};
+
+    // This is what creates strafing
+    float speed = Vector3DotProduct(hvel, body->dir);
+
+    // Whenever the amount of acceleration to add is clamped by the maximum
+    // acceleration constant, a Player can make the speed faster by bringing the
+    // direction closer to horizontal velocity angle More info here:
+    // https://youtu.be/v3zT3Z5apaM?t=165
+    float maxSpeed = (crouchHold ? CROUCH_SPEED : MAX_SPEED);
+    float accel = Clamp(maxSpeed - speed, 0.f, MAX_ACCEL * delta);
+    hvel.x += body->dir.x * accel;
+    hvel.z += body->dir.z * accel;
+
+    body->velocity.x = hvel.x;
+    body->velocity.z = hvel.z;
+
+    body->position.x += body->velocity.x * delta;
+    body->position.y += body->velocity.y * delta;
+    body->position.z += body->velocity.z * delta;
+
+    // Fancy collision system against the floor
+    if (body->position.y <= 0.0f) {
+        body->position.y = 0.0f;
+        body->velocity.y = 0.0f;
+        body->isGrounded = true; // Enable jumping
+    }
+}
+
+// Update camera for FPS behaviour
+static void update_camera_fps(Camera *camera) {
+    const Vector3 up = (Vector3){0.0f, 1.0f, 0.0f};
+    const Vector3 targetOffset = (Vector3){0.0f, 0.0f, -1.0f};
+
+    // Left and right
+    Vector3 yaw = Vector3RotateByAxisAngle(targetOffset, up, lookRotation.x);
+
+    // Clamp view up
+    float maxAngleUp = Vector3Angle(up, yaw);
+    maxAngleUp -= 0.001f; // Avoid numerical errors
+    if (-(lookRotation.y) > maxAngleUp) {
+        lookRotation.y = -maxAngleUp;
+    }
+
+    // Clamp view down
+    float maxAngleDown = Vector3Angle(Vector3Negate(up), yaw);
+    maxAngleDown *= -1.0f;  // Downwards angle is negative
+    maxAngleDown += 0.001f; // Avoid numerical errors
+    if (-(lookRotation.y) < maxAngleDown) {
+        lookRotation.y = -maxAngleDown;
+    }
+
+    // Up and down
+    Vector3 right = Vector3Normalize(Vector3CrossProduct(yaw, up));
+
+    // Rotate view vector around right axis
+    float pitchAngle = -lookRotation.y - lean.y;
+    pitchAngle = Clamp(
+        pitchAngle, -PI / 2 + 0.0001f, PI / 2 - 0.0001f
+    ); // Clamp angle so it doesn't go past straight up or straight down
+    Vector3 pitch = Vector3RotateByAxisAngle(yaw, right, pitchAngle);
+
+    // Head animation
+    // Rotate up direction around forward axis
+    float headSin = sinf(headTimer * PI);
+    float headCos = cosf(headTimer * PI);
+    const float stepRotation = 0.01f;
+    camera->up =
+        Vector3RotateByAxisAngle(up, pitch, headSin * stepRotation + lean.x);
+
+    // Camera BOB
+    const float bobSide = 0.1f;
+    const float bobUp = 0.15f;
+    Vector3 bobbing = Vector3Scale(right, headSin * bobSide);
+    bobbing.y = fabsf(headCos * bobUp);
+
+    camera->position =
+        Vector3Add(camera->position, Vector3Scale(bobbing, walkLerp));
+    camera->target = Vector3Add(camera->position, pitch);
+}
+
+static b3ShapeId setup_level(b3WorldId worldId) {
+    b3BodyDef levelDef = b3DefaultBodyDef();
+    levelDef.type = b3_staticBody;
+    levelDef.position = (b3Vec3){0.0f, 0.0f, 0.0f};
+    b3BodyId levelId = b3CreateBody(worldId, &levelDef);
+    b3BoxHull planeBox = b3MakeBoxHull(25.0f, 0.1f, 25.0f);
+    b3ShapeDef shapeDef = b3DefaultShapeDef();
+    shapeDef.density = 1.0f;
+    shapeDef.baseMaterial.friction = 0.3f;
+    return b3CreateHullShape(levelId, &shapeDef, &planeBox.base);
+}
+
+static b3ShapeId create_cube(b3WorldId worldId) {
+    b3BodyDef cubeBody = b3DefaultBodyDef();
+    cubeBody.type = b3_dynamicBody;
+    cubeBody.position = (b3Vec3){
+        0.0f + (float)GetRandomValue(-2, 2),
+        20.0f,
+        0.0f + (float)GetRandomValue(-2, 2)
+    };
+    b3BodyId cubeId = b3CreateBody(worldId, &cubeBody);
+    b3BoxHull dynamicBox = b3MakeCubeHull(1.0f);
+    b3ShapeDef cubeShape = b3DefaultShapeDef();
+    cubeShape.density = 1.0f;
+    cubeShape.baseMaterial.friction = 0.3f;
+    return b3CreateHullShape(cubeId, &cubeShape, &dynamicBox.base);
+}
 
 int main(void) {
-    const int screenWidth = 800;
-    const int screenHeight = 450;
-    bool showMessageBox = false;
+    const int screenWidth = 1024;
+    const int screenHeight = 768;
 
-    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_VSYNC_HINT);
+    vec_b3BodyId cube_bodies = {0};
+
     InitWindow(
-        screenWidth, screenHeight, "raylib [core] example - window letterbox"
+        screenWidth, screenHeight, "raylib [core] example - 3d camera fps"
     );
-    SetWindowMinSize(320, 240);
 
-    int gameScreenWidth = 640;
-    int gameScreenHeight = 480;
+    b3WorldDef worldDef = b3DefaultWorldDef();
+    worldDef.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
+    b3WorldId worldId = b3CreateWorld(&worldDef);
+    setup_level(worldId);
 
-    RenderTexture2D target =
-        LoadRenderTexture(gameScreenWidth, gameScreenHeight);
-    SetTextureFilter(target.texture, TEXTURE_FILTER_BILINEAR);
+    Camera camera = {0};
+    camera.fovy = 90.0f;
+    camera.projection = CAMERA_PERSPECTIVE;
+    camera.position = (Vector3){
+        player.position.x,
+        player.position.y + (BOTTOM_HEIGHT + headLerp),
+        player.position.z,
+    };
 
-    Color colors[10] = {0};
-    for (int i = 0; i < 10; i++)
-        colors[i] = (Color){
-            GetRandomValue(100, 250),
-            GetRandomValue(50, 150),
-            GetRandomValue(10, 100),
-            255
-        };
+    update_camera_fps(&camera);
+
+    DisableCursor();
 
     SetTargetFPS(60);
+    Mesh cubeMesh = GenMeshCube(2.0f, 2.0f, 2.0f);
+    Model cubeModel = LoadModelFromMesh(cubeMesh);
+    cubeModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = RED;
 
     while (!WindowShouldClose()) {
-        float scale =
-            MIN((float)GetScreenWidth() / gameScreenWidth,
-                (float)GetScreenHeight() / gameScreenHeight);
-
-        if (IsKeyPressed(KEY_SPACE)) {
-            for (int i = 0; i < 10; i++)
-                colors[i] = (Color){
-                    GetRandomValue(100, 250),
-                    GetRandomValue(50, 150),
-                    GetRandomValue(10, 100),
-                    255
-                };
+        if (IsKeyPressed(KEY_F)) {
+            ToggleFullscreen();
+        }
+        if (IsKeyPressed(KEY_C)) {
+            b3ShapeId shapeId = create_cube(worldId);
+            b3BodyId bodyId = b3Shape_GetBody(shapeId);
+            vec_b3BodyId_push(&cube_bodies, bodyId);
         }
 
-        Vector2 mouse = GetMousePosition();
-        Vector2 virtualMouse = {0};
-        virtualMouse.x =
-            (mouse.x - (GetScreenWidth() - (gameScreenWidth * scale)) * 0.5f) /
-            scale;
-        virtualMouse.y =
-            (mouse.y -
-             (GetScreenHeight() - (gameScreenHeight * scale)) * 0.5f) /
-            scale;
-        virtualMouse = Vector2Clamp(
-            virtualMouse,
-            (Vector2){0, 0},
-            (Vector2){(float)gameScreenWidth, (float)gameScreenHeight}
+        float timeStep = GetFrameTime();
+        int subStepCount = 4;
+        b3World_Step(worldId, timeStep, subStepCount);
+
+        Vector2 mouseDelta = GetMouseDelta();
+        lookRotation.x -= mouseDelta.x * sensitivity.x;
+        lookRotation.y += mouseDelta.y * sensitivity.y;
+
+        char sideway = (IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
+        char forward = (IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
+        bool crouching = IsKeyDown(KEY_LEFT_CONTROL);
+        update_body(
+            &player,
+            lookRotation.x,
+            sideway,
+            forward,
+            IsKeyPressed(KEY_SPACE),
+            crouching
         );
 
-        BeginTextureMode(target);
-        ClearBackground(RAYWHITE);
+        float delta = GetFrameTime();
+        headLerp = Lerp(
+            headLerp, (crouching ? CROUCH_HEIGHT : STAND_HEIGHT), 20.0f * delta
+        );
+        camera.position = (Vector3){
+            player.position.x,
+            player.position.y + (BOTTOM_HEIGHT + headLerp),
+            player.position.z,
+        };
 
-        if (GuiButton((Rectangle){24, 24, 120, 30}, "#191#Show Message"))
-            showMessageBox = true;
-
-        if (showMessageBox) {
-            int btnActive = -1;
-            GuiMessageBox(
-                (Rectangle){85, 70, 250, 100},
-                "#191#Message Box",
-                "Hi! This is a message!",
-                "Nice;Cool",
-                &btnActive
-            );
-
-            if (btnActive >= 0)
-                showMessageBox = false;
+        if (player.isGrounded && ((forward != 0) || (sideway != 0))) {
+            headTimer += delta * 3.0f;
+            walkLerp = Lerp(walkLerp, 1.0f, 10.0f * delta);
+            camera.fovy = Lerp(camera.fovy, 55.0f, 5.0f * delta);
+        } else {
+            walkLerp = Lerp(walkLerp, 0.0f, 10.0f * delta);
+            camera.fovy = Lerp(camera.fovy, 60.0f, 5.0f * delta);
         }
-        EndTextureMode();
+
+        lean.x = Lerp(lean.x, sideway * 0.02f, 10.0f * delta);
+        lean.y = Lerp(lean.y, forward * 0.015f, 10.0f * delta);
+
+        update_camera_fps(&camera);
 
         BeginDrawing();
-        ClearBackground(BLACK);
 
-        DrawTexturePro(
-            target.texture,
-            (Rectangle){
-                0.0f,
-                0.0f,
-                (float)target.texture.width,
-                (float)-target.texture.height
-            },
-            (Rectangle){
-                (GetScreenWidth() - ((float)gameScreenWidth * scale)) * 0.5f,
-                (GetScreenHeight() - ((float)gameScreenHeight * scale)) * 0.5f,
-                (float)gameScreenWidth * scale,
-                (float)gameScreenHeight * scale
-            },
-            (Vector2){0, 0},
-            0.0f,
-            WHITE
-        );
+        ClearBackground(RAYWHITE);
+
+        BeginMode3D(camera);
+
+        c_foreach(bodyId, vec_b3BodyId, cube_bodies) {
+            b3Vec3 position = b3Body_GetPosition(*bodyId.ref);
+            b3Quat rotation = b3Body_GetRotation(*bodyId.ref);
+            Matrix matRotation = QuaternionToMatrix((Quaternion){
+                rotation.v.x, rotation.v.y, rotation.v.z, rotation.s
+            });
+            Matrix matTranslation =
+                MatrixTranslate(position.x, position.y, position.z);
+            Matrix matModel = MatrixMultiply(matRotation, matTranslation);
+            cubeModel.transform = matModel;
+
+            DrawModel(cubeModel, (Vector3){0, 0, 0}, 1.0f, WHITE);
+        }
+
+        DrawGrid(100, 1.0f);
+        EndMode3D();
+
         EndDrawing();
     }
 
-    UnloadRenderTexture(target);
-
     CloseWindow();
 
+    b3DestroyWorld(worldId);
+    vec_b3BodyId_drop(&cube_bodies);
     return 0;
 }
