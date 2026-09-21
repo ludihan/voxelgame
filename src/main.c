@@ -1,4 +1,5 @@
 #include "box3d/box3d.h"
+#include "box3d/collision.h"
 #include "box3d/id.h"
 #include "box3d/math_functions.h"
 #include "box3d/types.h"
@@ -6,8 +7,12 @@
 
 #include "raymath.h"
 #include "rlgl.h"
+#include <stdio.h>
 
 #define i_key b3BodyId
+#include "stc/vec.h"
+
+#define i_key b3ShapeId
 #include "stc/vec.h"
 
 // Movement constants
@@ -191,9 +196,9 @@ static b3ShapeId create_cube(b3WorldId worldId) {
     b3BodyDef cubeBody = b3DefaultBodyDef();
     cubeBody.type = b3_dynamicBody;
     cubeBody.position = (b3Vec3){
-        0.0f + (float)GetRandomValue(-2, 2),
+        0.0f + (float)GetRandomValue(-20, 20),
         20.0f,
-        0.0f + (float)GetRandomValue(-2, 2)
+        0.0f + (float)GetRandomValue(-20, 20)
     };
     b3BodyId cubeId = b3CreateBody(worldId, &cubeBody);
     b3BoxHull dynamicBox = b3MakeCubeHull(1.0f);
@@ -203,11 +208,45 @@ static b3ShapeId create_cube(b3WorldId worldId) {
     return b3CreateHullShape(cubeId, &cubeShape, &dynamicBox.base);
 }
 
+static vec_b3ShapeId create_walls(b3WorldId worldId) {
+    vec_b3ShapeId wall_shapes = {0};
+    for (size_t i = 0; i < 4; i++) {
+        b3BodyDef wallBody = b3DefaultBodyDef();
+        switch (i) {
+        case 0:
+        case 1:
+            wallBody.position = (b3Vec3){
+                0.0f,
+                5.0f,
+                (i == 0 ? 1 : -1) * 20.0f,
+            };
+            break;
+        case 2:
+        case 3:
+            wallBody.position = (b3Vec3){(i == 2 ? 1 : -1) * 20.0f, 5.0f, 0.0f};
+            break;
+        }
+        wallBody.type = b3_kinematicBody;
+        b3BodyId wallId = b3CreateBody(worldId, &wallBody);
+        b3BoxHull staticWall = b3MakeBoxHull(15.0f, 5.0f, 2.0f);
+        b3ShapeDef wallShape = b3DefaultShapeDef();
+        wallShape.density = 1.0f;
+        wallShape.baseMaterial.friction = 0.3f;
+        vec_b3ShapeId_push(
+            &wall_shapes,
+            b3CreateHullShape(wallId, &wallShape, &staticWall.base)
+        );
+    }
+    return wall_shapes;
+}
+
 int main(void) {
+    bool free_camera = true;
     const int screenWidth = 1024;
     const int screenHeight = 768;
 
     vec_b3BodyId cube_bodies = {0};
+    vec_b3BodyId wall_bodies = {0};
 
     InitWindow(
         screenWidth, screenHeight, "raylib [core] example - 3d camera fps"
@@ -217,6 +256,10 @@ int main(void) {
     worldDef.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
     b3WorldId worldId = b3CreateWorld(&worldDef);
     setup_level(worldId);
+    vec_b3ShapeId walls = create_walls(worldId);
+    c_foreach(shapeId, vec_b3ShapeId, walls) {
+        vec_b3BodyId_push(&wall_bodies, b3Shape_GetBody(*shapeId.ref));
+    }
 
     Camera camera = {0};
     camera.fovy = 90.0f;
@@ -232,63 +275,73 @@ int main(void) {
     DisableCursor();
 
     SetTargetFPS(60);
-    Mesh cubeMesh = GenMeshCube(2.0f, 2.0f, 2.0f);
-    Model cubeModel = LoadModelFromMesh(cubeMesh);
+    // Mesh cubeMesh = GenMeshCube(2.0f, 2.0f, 2.0f);
+    Model cubeModel = LoadModel("res/raylib_cube.glb");
     cubeModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = RED;
 
+    bool veloc_appli = false;
+    int i = 0;
     while (!WindowShouldClose()) {
+        if (IsKeyPressed(KEY_ONE))
+            free_camera = false;
+        if (IsKeyPressed(KEY_TWO))
+            free_camera = true;
         if (IsKeyPressed(KEY_F)) {
             ToggleFullscreen();
         }
         if (IsKeyPressed(KEY_C)) {
-            b3ShapeId shapeId = create_cube(worldId);
-            b3BodyId bodyId = b3Shape_GetBody(shapeId);
-            vec_b3BodyId_push(&cube_bodies, bodyId);
+            for (size_t i = 0; i < 10; i++) {
+                b3ShapeId shapeId = create_cube(worldId);
+                b3BodyId bodyId = b3Shape_GetBody(shapeId);
+                vec_b3BodyId_push(&cube_bodies, bodyId);
+            }
         }
 
-        float timeStep = GetFrameTime();
-        int subStepCount = 4;
-        b3World_Step(worldId, timeStep, subStepCount);
+        if (!free_camera) {
+            Vector2 mouseDelta = GetMouseDelta();
+            lookRotation.x -= mouseDelta.x * sensitivity.x;
+            lookRotation.y += mouseDelta.y * sensitivity.y;
 
-        Vector2 mouseDelta = GetMouseDelta();
-        lookRotation.x -= mouseDelta.x * sensitivity.x;
-        lookRotation.y += mouseDelta.y * sensitivity.y;
+            char sideway = (IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
+            char forward = (IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
+            bool crouching = IsKeyDown(KEY_LEFT_CONTROL);
+            update_body(
+                &player,
+                lookRotation.x,
+                sideway,
+                forward,
+                IsKeyPressed(KEY_SPACE),
+                crouching
+            );
+            float delta = GetFrameTime();
+            headLerp = Lerp(
+                headLerp,
+                (crouching ? CROUCH_HEIGHT : STAND_HEIGHT),
+                20.0f * delta
+            );
+            camera.position = (Vector3){
+                player.position.x,
+                player.position.y + (BOTTOM_HEIGHT + headLerp),
+                player.position.z,
+            };
 
-        char sideway = (IsKeyDown(KEY_D) - IsKeyDown(KEY_A));
-        char forward = (IsKeyDown(KEY_W) - IsKeyDown(KEY_S));
-        bool crouching = IsKeyDown(KEY_LEFT_CONTROL);
-        update_body(
-            &player,
-            lookRotation.x,
-            sideway,
-            forward,
-            IsKeyPressed(KEY_SPACE),
-            crouching
-        );
+            if (player.isGrounded && ((forward != 0) || (sideway != 0))) {
+                headTimer += delta * 3.0f;
+                walkLerp = Lerp(walkLerp, 1.0f, 10.0f * delta);
+                camera.fovy = Lerp(camera.fovy, 55.0f, 5.0f * delta);
+            } else {
+                walkLerp = Lerp(walkLerp, 0.0f, 10.0f * delta);
+                camera.fovy = Lerp(camera.fovy, 60.0f, 5.0f * delta);
+            }
 
-        float delta = GetFrameTime();
-        headLerp = Lerp(
-            headLerp, (crouching ? CROUCH_HEIGHT : STAND_HEIGHT), 20.0f * delta
-        );
-        camera.position = (Vector3){
-            player.position.x,
-            player.position.y + (BOTTOM_HEIGHT + headLerp),
-            player.position.z,
-        };
+            lean.x = Lerp(lean.x, sideway * 0.02f, 10.0f * delta);
+            lean.y = Lerp(lean.y, forward * 0.015f, 10.0f * delta);
 
-        if (player.isGrounded && ((forward != 0) || (sideway != 0))) {
-            headTimer += delta * 3.0f;
-            walkLerp = Lerp(walkLerp, 1.0f, 10.0f * delta);
-            camera.fovy = Lerp(camera.fovy, 55.0f, 5.0f * delta);
+            update_camera_fps(&camera);
+
         } else {
-            walkLerp = Lerp(walkLerp, 0.0f, 10.0f * delta);
-            camera.fovy = Lerp(camera.fovy, 60.0f, 5.0f * delta);
+            UpdateCamera(&camera, CAMERA_FREE);
         }
-
-        lean.x = Lerp(lean.x, sideway * 0.02f, 10.0f * delta);
-        lean.y = Lerp(lean.y, forward * 0.015f, 10.0f * delta);
-
-        update_camera_fps(&camera);
 
         BeginDrawing();
 
@@ -310,15 +363,63 @@ int main(void) {
             DrawModel(cubeModel, (Vector3){0, 0, 0}, 1.0f, WHITE);
         }
 
+        c_foreach(bodyId, vec_b3BodyId, wall_bodies) {
+            b3ShapeId a[1] = {0};
+            b3Body_GetShapes(*bodyId.ref, (b3ShapeId *)&a, 1);
+            const b3HullData *data = b3Shape_GetHull(a[0]);
+            if (!veloc_appli) {
+                b3Body_SetAngularVelocity(
+                    *bodyId.ref, (b3Vec3){0.0f, 2.0f, 0.0f}
+                );
+                i++;
+                if (i == 4)
+                    veloc_appli = true;
+            }
+            b3AABB aabb = data->aabb;
+            b3Vec3 position = b3Body_GetPosition(*bodyId.ref);
+            b3Quat rotation = b3Body_GetRotation(*bodyId.ref);
+
+            Matrix matRotation = QuaternionToMatrix((Quaternion){
+                rotation.v.x, rotation.v.y, rotation.v.z, rotation.s
+            });
+            Matrix matTranslation =
+                MatrixTranslate(position.x, position.y, position.z);
+            Matrix matModel = MatrixMultiply(matRotation, matTranslation);
+            cubeModel.transform = matModel;
+            float angle;
+            b3Vec3 axis = b3GetAxisAngle(&angle, rotation);
+
+            rlPushMatrix();
+
+            rlTranslatef(position.x, position.y, position.z);
+
+            rlRotatef(angle * RAD2DEG, axis.x, axis.y, axis.z);
+            printf("%f %f %f\n", position.x, position.y, position.z);
+
+            DrawCube(
+                (Vector3){0.0f, 0.0f, 0.0f},
+                fabsf(aabb.lowerBound.x - aabb.upperBound.x),
+                fabsf(aabb.lowerBound.y - aabb.upperBound.y),
+                fabsf(aabb.lowerBound.z - aabb.upperBound.z),
+                RED
+            );
+
+            rlPopMatrix();
+        }
+
         DrawGrid(100, 1.0f);
         EndMode3D();
 
         EndDrawing();
+        float timeStep = GetFrameTime();
+        int subStepCount = 4;
+        b3World_Step(worldId, timeStep, subStepCount);
     }
 
     CloseWindow();
 
     b3DestroyWorld(worldId);
     vec_b3BodyId_drop(&cube_bodies);
+    vec_b3BodyId_drop(&wall_bodies);
     return 0;
 }
