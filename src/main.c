@@ -249,7 +249,7 @@ int main(void) {
     vec_b3BodyId wall_bodies = {0};
 
     InitWindow(
-        screenWidth, screenHeight, "raylib [core] example - 3d camera fps"
+        screenWidth, screenHeight, "voxelgame"
     );
 
     b3WorldDef worldDef = b3DefaultWorldDef();
