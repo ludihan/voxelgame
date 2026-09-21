@@ -248,9 +248,9 @@ int main(void) {
     vec_b3BodyId cube_bodies = {0};
     vec_b3BodyId wall_bodies = {0};
 
-    InitWindow(
-        screenWidth, screenHeight, "voxelgame"
-    );
+    size_t entities = 5;
+
+    InitWindow(screenWidth, screenHeight, "voxelgame");
 
     b3WorldDef worldDef = b3DefaultWorldDef();
     worldDef.gravity = (b3Vec3){0.0f, -10.0f, 0.0f};
@@ -274,7 +274,7 @@ int main(void) {
 
     DisableCursor();
 
-    SetTargetFPS(60);
+    // SetTargetFPS(60);
     // Mesh cubeMesh = GenMeshCube(2.0f, 2.0f, 2.0f);
     Model cubeModel = LoadModel("res/raylib_cube.glb");
     cubeModel.materials[0].maps[MATERIAL_MAP_DIFFUSE].color = RED;
@@ -295,6 +295,7 @@ int main(void) {
                 b3BodyId bodyId = b3Shape_GetBody(shapeId);
                 vec_b3BodyId_push(&cube_bodies, bodyId);
             }
+            entities += 10;
         }
 
         if (!free_camera) {
@@ -394,7 +395,6 @@ int main(void) {
             rlTranslatef(position.x, position.y, position.z);
 
             rlRotatef(angle * RAD2DEG, axis.x, axis.y, axis.z);
-            printf("%f %f %f\n", position.x, position.y, position.z);
 
             DrawCube(
                 (Vector3){0.0f, 0.0f, 0.0f},
@@ -409,6 +409,9 @@ int main(void) {
 
         DrawGrid(100, 1.0f);
         EndMode3D();
+
+        DrawText(TextFormat("%d FPS", GetFPS()), 0, 0, 40, GREEN);
+        DrawText(TextFormat("%d entities", entities), 0, 40, 40, GREEN);
 
         EndDrawing();
         float timeStep = GetFrameTime();
