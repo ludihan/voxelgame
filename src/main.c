@@ -33,6 +33,15 @@
 
 #define NORMALIZE_INPUT 0
 
+// Point the orbital camera circles around (center of the arena)
+#define SCENE_CENTER ((Vector3){0.0f, 0.0f, 0.0f})
+
+typedef enum {
+    CAMERA_MODE_FPS,
+    CAMERA_MODE_FREE,
+    CAMERA_MODE_ORBIT,
+} CameraModeKind;
+
 typedef struct {
     Vector3 position;
     Vector3 velocity;
@@ -241,7 +250,7 @@ static vec_b3ShapeId create_walls(b3WorldId worldId) {
 }
 
 int main(void) {
-    bool free_camera = true;
+    CameraModeKind camera_mode = CAMERA_MODE_FREE;
     const int screenWidth = 1024;
     const int screenHeight = 768;
 
@@ -284,9 +293,18 @@ int main(void) {
     int i = 0;
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_ONE))
-            free_camera = false;
+            camera_mode = CAMERA_MODE_FPS;
         if (IsKeyPressed(KEY_TWO))
-            free_camera = true;
+            camera_mode = CAMERA_MODE_FREE;
+        if (IsKeyPressed(KEY_THREE) && camera_mode != CAMERA_MODE_ORBIT) {
+            camera_mode = CAMERA_MODE_ORBIT;
+            // Start from an elevated overview of the arena
+            camera.target = SCENE_CENTER;
+            camera.position =
+                Vector3Add(SCENE_CENTER, (Vector3){35.0f, 25.0f, 35.0f});
+            camera.up = (Vector3){0.0f, 1.0f, 0.0f};
+            camera.fovy = 60.0f;
+        }
         if (IsKeyPressed(KEY_F)) {
             ToggleFullscreen();
         }
@@ -299,7 +317,8 @@ int main(void) {
             entities += 10;
         }
 
-        if (!free_camera) {
+        switch (camera_mode) {
+        case CAMERA_MODE_FPS: {
             Vector2 mouseDelta = GetMouseDelta();
             lookRotation.x -= mouseDelta.x * sensitivity.x;
             lookRotation.y += mouseDelta.y * sensitivity.y;
@@ -340,9 +359,15 @@ int main(void) {
             lean.y = Lerp(lean.y, forward * 0.015f, 10.0f * delta);
 
             update_camera_fps(&camera);
-
-        } else {
+            break;
+        }
+        case CAMERA_MODE_FREE:
             UpdateCamera(&camera, CAMERA_FREE);
+            break;
+        case CAMERA_MODE_ORBIT:
+            // Rotates around camera.target, mouse wheel zooms
+            UpdateCamera(&camera, CAMERA_ORBITAL);
+            break;
         }
 
         BeginDrawing();
