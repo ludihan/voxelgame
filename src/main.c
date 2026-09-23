@@ -102,12 +102,16 @@ void update_body(
     };
     body->dir = Vector3Lerp(body->dir, desiredDir, CONTROL * delta);
 
-    float decel = (body->isGrounded ? FRICTION : AIR_DRAG);
+    // Drag constants are tuned per frame at 60 FPS, scale them by frame time
+    // so movement doesn't depend on the frame rate
+    float decel = powf(body->isGrounded ? FRICTION : AIR_DRAG, delta * 60.0f);
     Vector3 hvel =
         (Vector3){body->velocity.x * decel, 0.0f, body->velocity.z * decel};
 
+    // Only snap to a stop when there's no input, otherwise at high frame rates
+    // a single frame of acceleration never gets past the threshold
     float hvelLength = Vector3Length(hvel); // Magnitude
-    if (hvelLength < (MAX_SPEED * 0.01f))
+    if ((side == 0) && (forward == 0) && (hvelLength < (MAX_SPEED * 0.01f)))
         hvel = (Vector3){0};
 
     // This is what creates strafing
